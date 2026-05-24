@@ -178,6 +178,74 @@ app.get('/api/install/:jobId', (req, res) => {
   res.json(job);
 });
 
+// ── Phones (pairing + commands relay) ──────────────────────────────────────
+// In-memory store for now. Production : Postgres / Redis.
+const phones = new Map();       // pairingCode → { ...info, lastSeen }
+const phoneCommands = new Map(); // pairingCode → [{ id, type, payload, createdAt }]
+
+// Called by the phone app at boot/poll to announce itself.
+app.post('/api/phones/register', (req, res) => {
+  const { pairingCode, model, platform, osVersion } = req.body || {};
+  if (!pairingCode) return res.status(400).json({ error: 'pairingCode required' });
+  phones.set(pairingCode, {
+    pairingCode, model: model || 'Android', platform: platform || 'android', osVersion: osVersion || '',
+    registeredAt: phones.get(pairingCode)?.registeredAt || Date.now(),
+    lastSeen: Date.now(),
+    paired: phones.get(pairingCode)?.paired || false,
+  });
+  res.json({ ok: true });
+});
+
+// Called by Jarvis Desktop to pair (link) a phone by its pairing code.
+app.post('/api/phones/pair', (req, res) => {
+  const { pairingCode } = req.body || {};
+  if (!pairingCode) return res.status(400).json({ error: 'pairingCode required' });
+  const p = phones.get(pairingCode);
+  if (!p) return res.status(404).json({ error: 'Téléphone non trouvé. Vérifie qu\'il a bien fait /register.' });
+  p.paired = true;
+  p.pairedAt = Date.now();
+  phones.set(pairingCode, p);
+  res.json({ ok: true, ...p });
+});
+
+// List paired phones
+app.get('/api/phones', (req, res) => {
+  res.json({ phones: Array.from(phones.values()).map(p => ({
+    ...p, lastSeen: new Date(p.lastSeen).toISOString(),
+    registeredAt: new Date(p.registeredAt).toISOString(),
+  })) });
+});
+
+// Send a command to a phone (Desktop → VPS → polled by phone)
+app.post('/api/phones/:code/commands', (req, res) => {
+  const { code } = req.params;
+  if (!phones.has(code)) return res.status(404).json({ error: 'Phone non trouvé' });
+  const cmd = { id: `cmd-${Date.now()}`, ...req.body, createdAt: Date.now() };
+  const list = phoneCommands.get(code) || [];
+  list.push(cmd);
+  phoneCommands.set(code, list);
+  res.json({ ok: true, queued: cmd.id });
+});
+
+// Phone polls for pending commands
+app.get('/api/phones/:code/commands', (req, res) => {
+  const { code } = req.params;
+  const list = phoneCommands.get(code) || [];
+  phoneCommands.set(code, []); // drain queue
+  // Mark seen
+  const p = phones.get(code);
+  if (p) { p.lastSeen = Date.now(); phones.set(code, p); }
+  res.json({ commands: list });
+});
+
+// Phone reports a command result
+app.post('/api/phones/:code/results', (req, res) => {
+  const { code } = req.params;
+  const p = phones.get(code);
+  if (p) { p.lastSeen = Date.now(); p.lastResult = req.body; phones.set(code, p); }
+  res.json({ ok: true });
+});
+
 // ── MCP management ──────────────────────────────────────────────────────────
 const MCP_CONFIG_PATH = path.join(os.homedir(), '.config', 'Claude', 'claude_desktop_config.json');
 

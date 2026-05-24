@@ -1,6 +1,6 @@
 {
   "name": "jarvis-os-sidecar",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "Jarvis OS sidecar API — runs on Hostinger VPS to manage Docker services, MCPs, agents",
   "main": "server.js",
   "type": "commonjs",
